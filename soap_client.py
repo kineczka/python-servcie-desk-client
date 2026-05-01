@@ -4,16 +4,28 @@ from typing import Any, List
 from requests import Session
 from zeep import Client, Settings
 from zeep.transports import Transport
+import urllib3
+
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 from config import USER_WSDL, TICKET_WSDL, ATTACHMENT_WSDL
 
 
 def _build_client(wsdl_url: str) -> Client:
     session = Session()
-    transport = Transport(session=session, timeout=30)
-    settings = Settings(strict=False, xml_huge_tree=True)
-    return Client(wsdl=wsdl_url, transport=transport, settings=settings)
+    session.trust_env = False
+    session.proxies = {"http": None, "https": None}
+    session.headers.update({"Connection": "close"})
+    session.verify = False
 
+    transport = Transport(
+        session=session,
+        timeout=30,
+        operation_timeout=30
+    )
+    settings = Settings(strict=False, xml_huge_tree=True)
+
+    return Client(wsdl=wsdl_url, transport=transport, settings=settings)
 
 def _as_list(value: Any) -> List[Any]:
     if value is None:
