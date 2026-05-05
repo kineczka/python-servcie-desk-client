@@ -218,6 +218,46 @@ class ServiceDeskApp(tk.Tk):
         except Exception as exc:
             messagebox.showerror("Błąd", f"Nie udało się pobrać zgłoszeń.\n\n{exc}")
 
+    def _resolve_created_ticket_id(self, result: Any, payload: dict) -> Optional[int]:
+        try:
+            tickets = self.ticket_client.get_all_tickets()
+        except Exception:
+            return None
+
+        matches = []
+        for ticket in tickets:
+            ticket_title = getattr(ticket, "title", None)
+            if ticket_title is not None and _safe_str(ticket_title).strip() != _safe_str(payload.get("title")).strip():
+                continue
+
+            ticket_description = getattr(ticket, "description", None)
+            if ticket_description is not None and _safe_str(ticket_description).strip() != _safe_str(payload.get("description")).strip():
+                continue
+
+            ticket_location = getattr(ticket, "location", None)
+            if ticket_location is not None and _safe_str(ticket_location).strip() != _safe_str(payload.get("location")).strip():
+                continue
+
+            ticket_priority = getattr(ticket, "priority", None)
+            if ticket_priority is not None and _safe_str(ticket_priority).strip() != _safe_str(payload.get("priority")).strip():
+                continue
+
+            reporter_id = getattr(ticket, "reporterId", None)
+            if reporter_id is not None:
+                try:
+                    if int(reporter_id) != int(payload["reporterId"]):
+                        continue
+                except (TypeError, ValueError):
+                    continue
+
+            ticket_id = getattr(ticket, "id", None)
+            try:
+                matches.append(int(ticket_id))
+            except (TypeError, ValueError):
+                continue
+
+        return max(matches) if matches else None
+
     def add_ticket(self) -> None:
         try:
             users = self.user_client.get_all_users()
@@ -232,7 +272,15 @@ class ServiceDeskApp(tk.Tk):
         def submit(payload: dict) -> Any:
             return self.ticket_client.add_ticket(payload)
 
-        TicketFormDialog(self, "Nowe zgłoszenie", users, submit, on_success=self.load_tickets)
+        TicketFormDialog(
+            self,
+            "Nowe zgłoszenie",
+            users,
+            submit,
+            on_success=self.load_tickets,
+            attachment_client=self.attachment_client,
+            created_ticket_id_resolver=self._resolve_created_ticket_id,
+        )
 
     def edit_ticket(self) -> None:
         ticket_id = self._selected_tree_id(self.tickets_tree)

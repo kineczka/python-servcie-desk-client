@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import mimetypes
+import os
+import re
 import tkinter as tk
 from tkinter import ttk, messagebox, filedialog
 from typing import Any, Callable, Optional
@@ -16,6 +18,49 @@ def _result_success(result: Any) -> bool:
 
 def _result_message(result: Any) -> str:
     return _safe_str(getattr(result, "message", "Brak komunikatu"))
+
+
+def _extract_int(value: Any) -> Optional[int]:
+    try:
+        if value is None or value == "":
+            return None
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _extract_ticket_id(value: Any) -> Optional[int]:
+    for attr_name in ("ticketId", "createdTicketId", "createdId", "id"):
+        ticket_id = _extract_int(getattr(value, attr_name, None))
+        if ticket_id is not None:
+            return ticket_id
+
+    for nested_attr in ("ticket", "createdTicket", "data", "payload"):
+        nested = getattr(value, nested_attr, None)
+        if nested is not None and nested is not value:
+            ticket_id = _extract_ticket_id(nested)
+            if ticket_id is not None:
+                return ticket_id
+
+    message = _safe_str(getattr(value, "message", ""))
+    match = re.search(r"\b(?:id|ID|#)\s*:?\s*(\d+)\b", message)
+    if match:
+        return int(match.group(1))
+
+    return None
+
+
+def _format_file_size(file_path: str) -> str:
+    try:
+        size = os.path.getsize(file_path)
+    except OSError:
+        return "-"
+
+    if size < 1024:
+        return f"{size} B"
+    if size < 1024 * 1024:
+        return f"{size / 1024:.1f} KB"
+    return f"{size / (1024 * 1024):.1f} MB"
 
 
 class UserFormDialog(tk.Toplevel):
@@ -121,10 +166,11 @@ class TicketFormDialog(tk.Toplevel):
         on_submit: Callable[[dict], Any],
         initial_data: Optional[Any] = None,
         on_success: Optional[Callable[[], None]] = None,
+        attachment_client: Optional[Any] = None,
+        created_ticket_id_resolver: Optional[Callable[[Any, dict], Optional[int]]] = None,
     ) -> None:
         super().__init__(parent)
         self.title(title)
-        self.geometry("620x420")
         self.transient(parent)
         self.grab_set()
 
@@ -132,6 +178,12 @@ class TicketFormDialog(tk.Toplevel):
         self.on_submit = on_submit
         self.on_success = on_success
         self.initial_data = initial_data
+        self.attachment_client = attachment_client
+        self.created_ticket_id_resolver = created_ticket_id_resolver
+        self.selected_attachment_paths: list[str] = []
+        self.attachments_enabled = initial_data is None and attachment_client is not None
+
+        self.geometry("720x560" if self.attachments_enabled else "620x420")
 
         self.user_label_to_id: dict[str, int] = {}
         self.id_to_user_label: dict[int, str] = {}
@@ -186,13 +238,84 @@ class TicketFormDialog(tk.Toplevel):
             width=47,
         ).grid(row=4, column=1, sticky="ew", pady=4)
 
+        next_row = 5
+
+        if self.attachments_enabled:
+            attachments_frame = ttk.LabelFrame(frame, text="Załączniki")
+            attachments_frame.grid(row=next_row, column=0, columnspan=2, sticky="nsew", pady=(10, 4))
+
+            attachment_buttons = ttk.Frame(attachments_frame)
+            attachment_buttons.pack(fill="x", padx=8, pady=(8, 4))
+
+            ttk.Button(
+                attachment_buttons,
+                text="Dodaj plik",
+                command=self.add_selected_attachments,
+            ).pack(side="left", padx=4)
+            ttk.Button(
+                attachment_buttons,
+                text="Usuń zaznaczony",
+                command=self.remove_selected_attachment,
+            ).pack(side="left", padx=4)
+
+            columns = ("fileName", "contentType", "size")
+            self.new_attachments_tree = ttk.Treeview(
+                attachments_frame,
+                columns=columns,
+                show="headings",
+                height=5,
+            )
+            self.new_attachments_tree.heading("fileName", text="Nazwa pliku")
+            self.new_attachments_tree.heading("contentType", text="Typ")
+            self.new_attachments_tree.heading("size", text="Rozmiar")
+            self.new_attachments_tree.column("fileName", width=300)
+            self.new_attachments_tree.column("contentType", width=180)
+            self.new_attachments_tree.column("size", width=90, anchor="e")
+            self.new_attachments_tree.pack(fill="both", expand=True, padx=8, pady=(0, 8))
+            next_row += 1
+
         buttons = ttk.Frame(frame)
-        buttons.grid(row=5, column=0, columnspan=2, sticky="e", pady=(12, 0))
+        buttons.grid(row=next_row, column=0, columnspan=2, sticky="e", pady=(12, 0))
 
         ttk.Button(buttons, text="Zapisz", command=self._save).pack(side="left", padx=4)
         ttk.Button(buttons, text="Anuluj", command=self.destroy).pack(side="left", padx=4)
 
         frame.columnconfigure(1, weight=1)
+        if self.attachments_enabled:
+            frame.rowconfigure(5, weight=1)
+
+    def add_selected_attachments(self) -> None:
+        file_paths = filedialog.askopenfilenames(title="Wybierz pliki")
+        if not file_paths:
+            return
+
+        for file_path in file_paths:
+            if file_path in self.selected_attachment_paths:
+                continue
+
+            self.selected_attachment_paths.append(file_path)
+            content_type = mimetypes.guess_type(file_path)[0] or "application/octet-stream"
+            self.new_attachments_tree.insert(
+                "",
+                "end",
+                iid=file_path,
+                values=(
+                    os.path.basename(file_path),
+                    content_type,
+                    _format_file_size(file_path),
+                ),
+            )
+
+    def remove_selected_attachment(self) -> None:
+        selection = self.new_attachments_tree.selection()
+        if not selection:
+            messagebox.showwarning("Brak wyboru", "Zaznacz załącznik do usunięcia.")
+            return
+
+        for item_id in selection:
+            if item_id in self.selected_attachment_paths:
+                self.selected_attachment_paths.remove(item_id)
+            self.new_attachments_tree.delete(item_id)
 
     def _save(self) -> None:
         title = self.title_var.get().strip()
@@ -229,7 +352,24 @@ class TicketFormDialog(tk.Toplevel):
         try:
             result = self.on_submit(payload)
             if _result_success(result):
-                messagebox.showinfo("Sukces", _result_message(result))
+                uploaded_count, upload_errors = self._upload_selected_attachments(result, payload)
+                if upload_errors:
+                    messagebox.showwarning(
+                        "Częściowy sukces",
+                        (
+                            f"{_result_message(result)}\n\n"
+                            f"Wysłano załączników: {uploaded_count}.\n"
+                            "Nie udało się wysłać:\n"
+                            + "\n".join(f"- {error}" for error in upload_errors)
+                        ),
+                    )
+                else:
+                    suffix = (
+                        f"\n\nWysłano załączników: {uploaded_count}."
+                        if uploaded_count
+                        else ""
+                    )
+                    messagebox.showinfo("Sukces", f"{_result_message(result)}{suffix}")
                 if self.on_success:
                     self.on_success()
                 self.destroy()
@@ -237,6 +377,53 @@ class TicketFormDialog(tk.Toplevel):
                 messagebox.showerror("Błąd", _result_message(result))
         except Exception as exc:
             messagebox.showerror("Błąd", f"Nie udało się zapisać zgłoszenia.\n\n{exc}")
+
+
+    def _resolve_created_ticket_id(self, result: Any, payload: dict) -> Optional[int]:
+        ticket_id = _extract_ticket_id(result)
+        if ticket_id is not None:
+            return ticket_id
+
+        if self.created_ticket_id_resolver is None:
+            return None
+
+        try:
+            return self.created_ticket_id_resolver(result, payload)
+        except Exception:
+            return None
+
+    def _upload_selected_attachments(self, result: Any, payload: dict) -> tuple[int, list[str]]:
+        if not self.attachments_enabled or not self.selected_attachment_paths:
+            return 0, []
+
+        ticket_id = self._resolve_created_ticket_id(result, payload)
+        if ticket_id is None:
+            return 0, ["nie udało się ustalić ID utworzonego zgłoszenia"]
+
+        uploaded_count = 0
+        errors: list[str] = []
+        for file_path in self.selected_attachment_paths:
+            file_name = os.path.basename(file_path)
+            try:
+                with open(file_path, "rb") as file:
+                    data = file.read()
+
+                content_type = mimetypes.guess_type(file_path)[0] or "application/octet-stream"
+                upload_result = self.attachment_client.upload_attachment(
+                    ticket_id,
+                    file_name,
+                    content_type,
+                    data,
+                )
+
+                if _result_success(upload_result):
+                    uploaded_count += 1
+                else:
+                    errors.append(f"{file_name}: {_result_message(upload_result)}")
+            except Exception as exc:
+                errors.append(f"{file_name}: {exc}")
+
+        return uploaded_count, errors
 
 
 class TicketDetailsDialog(tk.Toplevel):

@@ -1,4 +1,4 @@
-SERVER_IP = "192.168.0.66" #ip serwera
+SERVER_IP = "172.20.10.10" #ip serwera
 SERVER_PORT = "8181"
 
 USER_WSDL = f"https://{SERVER_IP}:{SERVER_PORT}/user-service/UserWebServiceImplService?wsdl"
