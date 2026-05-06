@@ -298,7 +298,15 @@ class ServiceDeskApp(tk.Tk):
         def submit(payload: dict) -> Any:
             return self.ticket_client.update_ticket(payload)
 
-        TicketFormDialog(self, "Edycja zgłoszenia", users, submit, initial_data=ticket, on_success=self.load_tickets)
+        TicketFormDialog(
+            self,
+            "Edycja zgłoszenia",
+            users,
+            submit,
+            initial_data=ticket,
+            on_success=self.load_tickets,
+            attachment_client=self.attachment_client,
+        )
 
     def delete_ticket(self) -> None:
         ticket_id = self._selected_tree_id(self.tickets_tree)
